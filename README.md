@@ -1,4 +1,4 @@
-Coursera Downloader
+[Coursera Downloader
 ===================
 
 [![Build Status](https://travis-ci.org/jplehmann/coursera.png?branch=master)](https://travis-ci.org/jplehmann/coursera)
@@ -46,28 +46,10 @@ Features
 Directions
 ----------
 
-Requires Python 2.6 (or newer) and a free Coursera account enrolled in
+Requires Python 3.3 (or newer) and a free Coursera account enrolled in
 the class of interest.
 
 1\. Install any missing dependencies.
-
-  * [Beautiful Soup 3][4] or [Beautiful Soup 4][5]
-    - Ubuntu/Debian for BS3: `sudo apt-get install python-beautifulsoup`
-    - Ubuntu/Debian for BS4: `sudo apt-get install python-bs4`
-    - Mac OSX: `bs4` may be required instead.
-    - Other: `easy_install BeautifulSoup`
-  * [Argparse][6]: Only necessary if using Python 2.6.
-    - Ubuntu/Debian: `sudo apt-get install python-argparse`
-    - Other: `easy_install argparse`
-  * [easy_install][7]: Only necessary if not using prepackaged dependencies.
-    - Ubuntu/Debian: `sudo apt-get install python-setuptools`
-
-On Mac OSX using MacPort, the following may be used:
-
-    port
-    > install py-beautifulsoup
-    > install py-argparse
-    > install py24-distribute  # for "py-setuptools", the obsolete name
 
 If you are using pip, you can directly install all the dependencies from the
 requirements file using `pip install -r requirements.txt`.
@@ -83,8 +65,9 @@ account (e.g., email address), password (or a `~/.netrc` file), the class names
     Filter by section name:      coursera-dl -u <user> -p <pass> -sf "Chapter_Four" saas
     Filter by lecture name:      coursera-dl -u <user> -p <pass> -lf "3.1_" saas
     Download only ppt files:     coursera-dl -u <user> -p <pass> -f "ppt" saas
-    Use a ~/.netrc file:         coursera-dl -n saas
-    Specify download path:       coursera-dl -n --path=C:\Coursera\Classes\ saas
+    Use a ~/.netrc file (will be used automatically, if user/pass are not specified):
+                                 coursera-dl saas
+    Specify download path:       coursera-dl --path="C:\Coursera\Classes\" saas
     
     Maintain a list of classes in a dir:
       Initialize:              mkdir -p CURRENT/{class1,class2,..classN}
