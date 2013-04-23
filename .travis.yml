@@ -1,7 +1,15 @@
 language: python
 python:
-  - "3.3"
+  - 2.7
+  - 3.2
+  - 3.3
+
+env:
+    - BS=beautifulsoup4
+    - BS=beautifulsoup
 # command to install dependencies
-install: "pip install -r requirements.txt --use-mirrors"
+install:
+    - pip install -q $BS
+    - pip install -q docopt==0.6.1
 # command to run tests
 script: "python -m unittest test.test_coursera"

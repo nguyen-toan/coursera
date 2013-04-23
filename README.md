@@ -51,6 +51,11 @@ the class of interest.
 
 1\. Install any missing dependencies.
 
++ BeautifulSoup:
+`pip install beautifulsoup4`
++ Docopt:
+`pip install docopt`
+
 If you are using pip, you can directly install all the dependencies from the
 requirements file using `pip install -r requirements.txt`.
 
