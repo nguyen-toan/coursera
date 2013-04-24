@@ -14,17 +14,33 @@ Examples:
 For further documentation and examples, visit the project's home at:
   https://github.com/jplehmann/coursera
 
-Author:
-  John Lehmann (first last at geemail dotcom or @jplehmann)
-  Rogério Brito (r lastname at ime usp br)
+Authors and copyright:
+    (c) 2012-2013, John Lehmann (first last at geemail dotcom or @jplehmann)
+    (c) 2012-2013, Rogerio Brito (r lastname at ime usp br)
 
 Contributions are welcome, but please add new unit tests to test your changes
 and/or features.  Also, please try to make changes platform independent and
 backward compatible.
+
+Legalese:
+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU Lesser General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or (at your
+ option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+from __future__ import print_function
 from docopt import docopt
-import http.cookiejar
+import datetime
 import errno
 import getpass
 import logging
@@ -33,28 +49,32 @@ import os
 import platform
 import re
 import string
-import io
 import subprocess
 import sys
 import tempfile
 import time
-import urllib
+from bs4 import BeautifulSoup
+
 
 try:
-    from BeautifulSoup import BeautifulSoup
+    # Python 3.*
+    import urllib.request as urllib2
+    import urllib.parse as urlparse
+    from urllib.error import HTTPError
+    import io
+    import http.cookiejar as cjlib
 except ImportError:
-    from bs4 import BeautifulSoup
+    # Python 2.*
+    import urllib2
+    import urllib as urlparse
+    from urllib2 import HTTPError
+    import StringIO as io
+    import cookielib as cjlib
+
 
 csrftoken = ''
 session = ''
-
-
-class ClassNotFoundException(BaseException):
-    """
-    Class to be thrown if a course is not found in coursera's site.
-    """
-
-    pass
+AUTH_URL = 'https://www.coursera.org/maestro/api/user/login'
 
 
 class BandwidthCalc(object):
@@ -100,19 +120,6 @@ class BandwidthCalc(object):
             return bw
 
 
-def get_auth_url(className):
-    """
-    Return the URL for authentication of the class given by className.
-    """
-
-    return 'https://class.coursera.org/%s/auth/auth_redirector?type=login&subtype=normal&email=&visiting=&minimal=true' \
-        % className
-
-
-def get_new_auth_url():
-    return 'https://www.coursera.org/maestro/api/user/login'
-
-
 def get_syllabus_url(className):
     """
     Return the Coursera index/syllabus URL.
@@ -123,21 +130,21 @@ def get_syllabus_url(className):
 
 def write_cookie_file(className, username, password):
     """
-    Automatically generate a cookie file for the coursera site.
+    Automatically generate a cookie file for the Coursera site.
     """
     try:
         global csrftoken
         global session
         hn, fn = tempfile.mkstemp()
-        cookies = http.cookiejar.LWPCookieJar()
+        cookies = cjlib.LWPCookieJar()
         handlers = [
-            urllib.request.HTTPHandler(),
-            urllib.request.HTTPSHandler(),
-            urllib.request.HTTPCookieProcessor(cookies)
+            urllib2.HTTPHandler(),
+            urllib2.HTTPSHandler(),
+            urllib2.HTTPCookieProcessor(cookies)
         ]
-        opener = urllib.request.build_opener(*handlers)
+        opener = urllib2.build_opener(*handlers)
 
-        req = urllib.request.Request(get_syllabus_url(className))
+        req = urllib2.Request(get_syllabus_url(className))
         res = opener.open(req)
 
         for cookie in cookies:
@@ -147,24 +154,32 @@ def write_cookie_file(className, username, password):
         opener.close()
 
         # Now make a call to the authenticator url:
-        cj = http.cookiejar.MozillaCookieJar(fn)
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj),
-                                      urllib.request.HTTPHandler(),
-                                      urllib.request.HTTPSHandler())
+        cj = cjlib.MozillaCookieJar(fn)
+        opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj),
+                                      urllib2.HTTPHandler(),
+                                      urllib2.HTTPSHandler())
 
-        opener.addheaders.append(('Cookie', 'csrftoken=%s' % csrftoken))
-        opener.addheaders.append(('Referer', 'https://www.coursera.org'))
-        opener.addheaders.append(('X-CSRFToken', csrftoken))
-        req = urllib.request.Request(get_new_auth_url())
+        # Preparation of headers and of data that we will send in a POST
+        # request.
+        std_headers = {
+            'Cookie': ('csrftoken=%s' % csrftoken),
+            'Referer': 'https://www.coursera.org',
+            'X-CSRFToken': csrftoken,
+            }
 
-        data = urllib.parse.urlencode({'email_address': username,
-                                 'password': password}).encode('ascii')
-        req.add_data(data)
+        auth_data = {
+            'email_address': username,
+            'password': password
+            }
+
+        formatted_data = urlparse.urlencode(auth_data).encode('ascii')
+
+        req = urllib2.Request(AUTH_URL, formatted_data, std_headers)
 
         opener.open(req)
-    except urllib.error.HTTPError as e:
+    except HTTPError as e:
         if e.code == 404:
-            raise ClassNotFoundException(className)
+            raise LookupError(className)
         else:
             raise
 
@@ -178,16 +193,17 @@ def down_the_wabbit_hole(className, cookies_file):
     """
     Get the session cookie
     """
-    auth_redirector_url = 'https://class.coursera.org/%s/auth/auth_redirector?type=login&subtype=normal&email=&visiting=%s' % (className, urllib.parse.quote_plus(get_syllabus_url(className)))
+    quoted_class_url = urlparse.quote_plus(get_syllabus_url(className))
+    auth_redirector_url = 'https://class.coursera.org/%s/auth/auth_redirector?type=login&subtype=normal&email=&visiting=%s' % (className, quoted_class_url)
 
     global session
     cj = get_cookie_jar(cookies_file)
 
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj),
-                                  urllib.request.HTTPHandler(),
-                                  urllib.request.HTTPSHandler())
+    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj),
+                                  urllib2.HTTPHandler(),
+                                  urllib2.HTTPSHandler())
 
-    req = urllib.request.Request(auth_redirector_url)
+    req = urllib2.Request(auth_redirector_url)
     opener.open(req)
 
     for cookie in cj:
@@ -197,34 +213,118 @@ def down_the_wabbit_hole(className, cookies_file):
     opener.close()
 
 
-def get_netrc_path(path=None):
+def get_config_paths(config_name, user_specified_path=None):
     """
-    Loads netrc file from given path or default location
+    Returns a list of config files paths to try in order, given config file
+    name and possibly a user-specified path
     """
 
-    if not path and platform.system() == 'Windows':
-        # set some sane default on windows
-        if os.path.isfile('_netrc'):
-            path = '_netrc'
+    # For Windows platforms, there are several paths that can be tried to
+    # retrieve the netrc file. There is, however, no "standard way" of doing
+    # things.
+    #
+    # A brief recap of the situation (all file paths are written in Unix
+    # convention):
+    #
+    # 1. By default, Windows does not define a $HOME path. However, some
+    # people might define one manually, and many command-line tools imported
+    # from Unix will search the $HOME environment variable first. This
+    # includes MSYSGit tools (bash, ssh, ...) and Emacs.
+    #
+    # 2. Windows defines two 'user paths': $USERPROFILE, and the
+    # concatenation of the two variables $HOMEDRIVE and $HOMEPATH. Both of
+    # these paths point by default to the same location, e.g.
+    # C:\Users\Username
+    #
+    # 3. $USERPROFILE cannot be changed, however $HOMEDRIVE and $HOMEPATH
+    # can be changed. They are originally intended to be the equivalent of
+    # the $HOME path, but there are many known issues with them
+    #
+    # 4. As for the name of the file itself, most of the tools ported from
+    # Unix will use the standard '.dotfile' scheme, but some of these will
+    # instead use "_dotfile". Of the latter, the two notable exceptions are
+    # vim, which will first try '_vimrc' before '.vimrc' (but it will try
+    # both) and git, which will require the user to name its netrc file
+    # '_netrc'.
+    #
+    # Relevant links :
+    # http://markmail.org/message/i33ldu4xl5aterrr
+    # http://markmail.org/message/wbzs4gmtvkbewgxi
+    # http://stackoverflow.com/questions/6031214/
+    #
+    # Because the whole thing is a mess, I suggest we tried various sensible
+    # defaults until we succeed or have depleted all possibilities.
+
+    if user_specified_path is not None:
+        return [user_specified_path]
+
+    if platform.system() != 'Windows':
+        return [None]
+
+    # a useful helper function that converts None to the empty string
+    getenv_or_empty = lambda s: os.getenv(s) or ""
+
+    # Now, we only treat the case of Windows
+    env_vars = [["HOME"],
+                ["HOMEDRIVE", "HOMEPATH"],
+                ["USERPROFILE"],
+                ["SYSTEMDRIVE"]]
+
+    env_dirs = []
+    for v in env_vars:
+        dir = ''.join(map(getenv_or_empty, v))
+        if not dir:
+            logging.debug('Environment var(s) %s not defined, skipping', v)
         else:
-            profilepath = os.getenv('USERPROFILE')
-            if profilepath:
-                path = '%s\\_netrc' % profilepath
-            else:
-                path = '\\_netrc'
-    return path
+            env_dirs.append(dir)
+
+    additional_dirs = ["C:", ""]
+
+    all_dirs = env_dirs + additional_dirs
+
+    leading_chars = [".", "_"]
+
+    res = [''.join([dir, os.sep, lc, config_name])
+           for dir in all_dirs
+           for lc in leading_chars]
+
+    return res
+
+
+def authenticate_through_netrc(user_specified_path=None):
+    """
+    Returns the tuple user / password given a path for the .netrc file
+    """
+    res = None
+    errors = []
+    paths_to_try = get_config_paths("netrc", user_specified_path)
+    for p in paths_to_try:
+        try:
+            logging.debug('Trying netrc file %s', p)
+            auths = netrc.netrc(p).authenticators('coursera-dl')
+            res = (auths[0], auths[2])
+            break
+        except (IOError, TypeError, netrc.NetrcParseError) as e:
+            errors.append(e)
+
+    if res is None:
+        for e in errors:
+            logging.error(str(e))
+        sys.exit(1)
+
+    return res
 
 
 def load_cookies_file(cookies_file):
     """
-    Loads the cookies file. I am pre-pending the file with the special
-    Netscape header because the cookie loader is being very particular about
-    this string.
+    Loads the cookies file.
+
+    We pre-pend the file with the special Netscape header because the cookie
+    loader is very particular about this string.
     """
 
     cookies = io.StringIO()
-    NETSCAPE_HEADER = '# Netscape HTTP Cookie File'
-    cookies.write(NETSCAPE_HEADER)
+    cookies.write('# Netscape HTTP Cookie File')
     cookies.write(open(cookies_file, 'r').read())
     cookies.flush()
     cookies.seek(0)
@@ -232,7 +332,7 @@ def load_cookies_file(cookies_file):
 
 
 def get_cookie_jar(cookies_file):
-    cj = http.cookiejar.MozillaCookieJar()
+    cj = cjlib.MozillaCookieJar()
     cookies = load_cookies_file(cookies_file)
 
     # nasty hack: cj.load() requires a filename not a file, but if I use
@@ -250,21 +350,25 @@ def get_opener(cookies_file):
 
     cj = get_cookie_jar(cookies_file)
 
-    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj),
-                                urllib.request.HTTPHandler(),
-                                urllib.request.HTTPSHandler())
+    return urllib2.build_opener(urllib2.HTTPCookieProcessor(cj),
+                                urllib2.HTTPHandler(),
+                                urllib2.HTTPSHandler())
 
 
-def get_page(url, cookies_file):
+def get_page(url):
     """
     Download an HTML page using the cookiejar.
     """
 
-    opener = urllib.request.build_opener(urllib.request.HTTPHandler(), urllib.request.HTTPSHandler())
-    req = urllib.request.Request(url)
+    opener = urllib2.build_opener(urllib2.HTTPHandler(), urllib2.HTTPSHandler())
+    req = urllib2.Request(url)
 
     opener.addheaders.append(('Cookie', 'csrf_token=%s;session=%s' % (csrftoken, session)))
-    ret = opener.open(req).read()
+    try:
+        ret = opener.open(req).read()
+    except HTTPError as e:
+        logging.error("Error %s getting page %s", str(e), url)
+        ret = ''
 
     # opener = get_opener(cookies_file)
     # ret = opener.open(url).read()
@@ -275,12 +379,17 @@ def get_page(url, cookies_file):
 def get_syllabus(class_name, cookies_file, local_page=False):
     """
     Get the course listing webpage.
+
+    If we are instructed to use a local page and it already exists, then
+    that page is used instead of performing a download.  If we are
+    instructed to use a local page and it does not exist, then we download
+    the page and save a copy of it for future use.
     """
 
     if not (local_page and os.path.exists(local_page)):
         url = get_syllabus_url(class_name)
         down_the_wabbit_hole(class_name, cookies_file)
-        page = get_page(url, cookies_file)
+        page = get_page(url)
         logging.info('Downloaded %s (%d bytes)', url, len(page))
 
         # cache the page if we're in 'local' mode
@@ -301,7 +410,7 @@ def clean_filename(s):
     """
 
     # strip paren portions which contain trailing time length (...)
-    s = re.sub("\([^\(]*$", '', s)
+    s = re.sub(r"\([^\(]*$", '', s)
     s = s.strip().replace(':', '-').replace(' ', '_')
     s = s.replace('nbsp', '')
     valid_chars = '-_.()%s%s' % (string.ascii_letters, string.digits)
@@ -310,12 +419,12 @@ def clean_filename(s):
 
 def get_anchor_format(a):
     """
-    Extract the resource file-type format from the anchor
+    Extract the resource file-type format from the anchor.
     """
 
     # (. or format=) then (file_extension) then (? or $)
     # e.g. "...format=txt" or "...download.mp4?..."
-    fmt = re.search("(?:\.|format=)(\w+)(?:\?.*)?$", a)
+    fmt = re.search(r"(?:\.|format=)(\w+)(?:\?.*)?$", a)
     return (fmt.group(1) if fmt else None)
 
 
@@ -354,7 +463,7 @@ def parse_syllabus(page, cookies_file, reverse=False):
             # Washington is now using Coursera's standards, AFAICS.  We
             # raise an exception, to be warned by our users, just in case.
             if 'mp4' not in lecture:
-                raise ClassNotFoundException("Missing/hidden videos?")
+                raise LookupError("Missing/hidden videos?")
 
             lectures.append((vname, lecture))
 
@@ -374,7 +483,7 @@ def parse_syllabus(page, cookies_file, reverse=False):
 
 def mkdir_p(path):
     """
-    Create subdirectory hierarcy given in the paths argument.
+    Create subdirectory hierarchy given in the paths argument.
     """
 
     try:
@@ -403,7 +512,9 @@ def download_lectures(wget_bin,
                       ):
     """
     Downloads lecture resources described by sections.
+    Returns True if the class appears completed.
     """
+    last_update = -1
 
     def format_section(num, section):
         sec = '%02d_%s' % (num, section)
@@ -429,7 +540,7 @@ def download_lectures(wget_bin,
                 mkdir_p(sec)
 
             # write lecture resources
-            for fmt, url in [i for i in list(lecture.items()) if i[0]
+            for fmt, url in [i for i in lecture.items() if i[0]
                              in file_formats or 'all'
                              in file_formats]:
                 lecfn = os.path.join(sec, format_resource(lecnum + 1,
@@ -442,8 +553,29 @@ def download_lectures(wget_bin,
                                       curl_bin, aria2_bin, axel_bin)
                     else:
                         open(lecfn, 'w').close()  # touch
+                    last_update = time.time()
                 else:
                     logging.info('%s already downloaded', lecfn)
+                    # if this file hasn't been modified in a long time,
+                    # record that time
+                    last_update = max(last_update, os.path.getmtime(lecfn))
+
+    # if we haven't updated any files in 1 month, we're probably
+    # done with this course
+    if last_update >= 0:
+        if time.time() - last_update > total_seconds(datetime.timedelta(days=30)):
+            logging.info('COURSE PROBABLY COMPLETE: ' + class_name)
+            return True
+    return False
+
+
+def total_seconds(td):
+    """
+    Compute total seconds for a timedelta.
+
+    Added for backward compatibility, pre 2.7.
+    """
+    return (td.microseconds + (td.seconds + td.days * 24 * 3600) * 10**6) // 10**6
 
 
 def download_file(url,
@@ -461,13 +593,13 @@ def download_file(url,
 
     try:
         if wget_bin:
-            download_file_wget(wget_bin, url, fn, cookies_file)
+            download_file_wget(wget_bin, url, fn)
         elif curl_bin:
-            download_file_curl(curl_bin, url, fn, cookies_file)
+            download_file_curl(curl_bin, url, fn)
         elif aria2_bin:
-            download_file_aria2(aria2_bin, url, fn, cookies_file)
+            download_file_aria2(aria2_bin, url, fn)
         elif axel_bin:
-            download_file_axel(axel_bin, url, fn, cookies_file)
+            download_file_axel(axel_bin, url, fn)
         else:
             download_file_nowget(url, fn, cookies_file)
     except KeyboardInterrupt:
@@ -476,7 +608,7 @@ def download_file(url,
         sys.exit()
 
 
-def download_file_wget(wget_bin, url, fn, cookies_file):
+def download_file_wget(wget_bin, url, fn):
     """
     Downloads a file using wget.  Could possibly use python to stream files
     to disk, but wget is robust and gives nice visual feedback.
@@ -489,7 +621,7 @@ def download_file_wget(wget_bin, url, fn, cookies_file):
     return subprocess.call(cmd)
 
 
-def download_file_curl(curl_bin, url, fn, cookies_file):
+def download_file_curl(curl_bin, url, fn):
     """
     Downloads a file using curl.  Could possibly use python to stream files
     to disk, but curl is robust and gives nice visual feedback.
@@ -501,7 +633,7 @@ def download_file_curl(curl_bin, url, fn, cookies_file):
     return subprocess.call(cmd)
 
 
-def download_file_aria2(aria2_bin, url, fn, cookies_file):
+def download_file_aria2(aria2_bin, url, fn):
     """
     Downloads a file using aria2.  Could possibly use python to stream files
     to disk, but aria2 is robust. Unfortunately, it does not give a nice
@@ -517,20 +649,15 @@ def download_file_aria2(aria2_bin, url, fn, cookies_file):
     return subprocess.call(cmd)
 
 
-def download_file_axel(axel_bin, url, fn, cookies_file):
+def download_file_axel(axel_bin, url, fn):
     """
     Downloads a file using axel.  Could possibly use python to stream files
     to disk, but axel is robust and it both gives nice visual feedback and
     get the job done fast.
     """
 
-    cj = http.cookiejar.MozillaCookieJar(cookies_file)
-    cj.load()
-    cookies_header = "Cookie: " + "; ".join(i.name + '=' + i.value
-                                            for i in list(cj))
-
-    cmd = [axel_bin, url, '-o', fn, '--header', cookies_header,
-           '--num-connections=4', '--alternate']
+    cmd = [axel_bin, '-H', "Cookie: csrf_token=%s; session=%s" % (csrftoken, session),
+           '-o', fn, '-n', '4', '-a', url]
     logging.debug('Executing axel: %s', cmd)
     return subprocess.call(cmd)
 
@@ -549,7 +676,7 @@ def download_file_nowget(url, fn, cookies_file):
         opener.addheaders.append(('Cookie', 'csrf_token=%s;session=%s' %
                                   (csrftoken, session)))
         urlfile = opener.open(url)
-    except urllib.error.HTTPError:
+    except HTTPError:
         logging.warn('Probably the file is missing from the AWS repository...'
                      ' skipping it.')
         return 1
@@ -571,6 +698,7 @@ def download_file_nowget(url, fn, cookies_file):
         urlfile.close()
         return 0
 
+
 def parseArgs():
     """
     Parse the arguments/options passed to the program on the command line.
@@ -585,12 +713,12 @@ def parseArgs():
     -c <file>, --cookies_file <file>
                         full path to the cookies.txt file
     -u <username>, --username <username>
-                        coursera username
+                        Coursera username
     -n <netrc>, --netrc <netrc>
                         use netrc for reading passwords, uses default location
                         if no path specified
     -p <password>, --password <password>
-                        coursera password
+                        Coursera password
     -f <formats>, --formats <formats>
                         comma-separated list of file format extensions to be
                         downloaded, e.g.: mp4,pdf [default: all]
@@ -621,27 +749,6 @@ def parseArgs():
 
     args = docopt(doc)
 
-    # turn list of strings into list
-    args['--formats'] = args['--formats'].split(',')
-
-    # check arguments
-    if args['--cookies_file'] and not os.path.exists(args['--cookies_file']):
-        logging.error('Cookies file not found: %s', args['--cookies_file'])
-        sys.exit(1)
-
-    if not args['--cookies_file'] and not args['--username']:
-        path = get_netrc_path(args['--netrc'])
-        try:
-            auths = netrc.netrc(path).authenticators('coursera-dl')
-            args['--username'] = auths[0]
-            args['--password'] = auths[2]
-        except (IOError, TypeError, netrc.NetrcParseError) as e:
-            logging.error(str(e))
-            sys.exit(1)
-
-    if args['--username'] and not args['--password']:
-        args['--password'] = getpass.getpass('Coursera password for %s: '
-                                        % args['--username'])
 
     if args['--debug']:
         logging.basicConfig(level=logging.DEBUG,
@@ -653,11 +760,26 @@ def parseArgs():
         logging.basicConfig(level=logging.INFO,
                             format='%(message)s')
 
+    # turn list of strings into list
+    args['--formats'] = args['--formats'].split(',')
+
+    # check arguments
+    if args['--cookies_file'] and not os.path.exists(args['--cookies_file']):
+        logging.error('Cookies file not found: %s', args['--cookies_file'])
+        sys.exit(1)
+
+    if not args['--cookies_file'] and not args['--username']:
+         args['--username'], args['--password'] = authenticate_through_netrc(args['--netrc'])
+
+    if args['--username'] and not args['--password']:
+        args['--password'] = getpass.getpass('Coursera password for %s: '
+                                        % args['--username'])
     return args
 
 def download_class(args, class_name):
     """
     Download all requested resources from the class given in class_name.
+    Returns True if the class appears completed.
     """
 
     if args['--username']:
@@ -699,12 +821,18 @@ def main():
     """
 
     args = parseArgs()
+    completed_classes = []
+
     for class_name in args['<class_names>']:
         try:
             logging.info('Downloading class: %s', class_name)
-            download_class(args, class_name)
-        except ClassNotFoundException as cnf:
+            if download_class(args, class_name):
+                completed_classes.append(class_name)
+        except LookupError as cnf:
             logging.error('Could not find class: %s', cnf)
+
+    if completed_classes:
+        logging.info("Classes which appear completed: " + " ".join(completed_classes))
 
 
 if __name__ == '__main__':
